@@ -1,16 +1,25 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
+// Serve static files from the current directory
+app.use(express.static(path.join(__dirname)));
+
+// Serve index.html on root route
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
 const PORT = process.env.PORT || 3000;
 
-// In-memory storage
-// Structure: { boards: { [boardId]: { name: string, nodes: { [nodeId]: { text, x, y } } } } }
+// In-memory storage for boards and nodes
 const boards = {};
 
-// Generate IDs
+// Generate unique IDs
 const genId = () => Math.random().toString(36).substr(2, 9);
 
 // List all boards
@@ -19,7 +28,7 @@ app.get('/boards', (req, res) => {
   res.json(list);
 });
 
-// Create new board
+// Create a new board
 app.post('/boards', (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
@@ -35,7 +44,7 @@ app.get('/boards/:id', (req, res) => {
   res.json(board);
 });
 
-// Add node to board
+// Add a node to board
 app.post('/boards/:id/nodes', (req, res) => {
   const board = boards[req.params.id];
   if (!board) return res.status(404).json({ error: 'Board not found' });
