@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Multi-User Mindmap Whiteboard</title>
+<style>
+  body { font-family: Arial,sans-serif; margin:0; display:flex; flex-direction: column; height: 100vh; }
+  #login, #app { flex-grow: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  #login { display:none; }
+  #usernameInput { font-size: 1.2em; padding: 0.5em; }
+  #boardSelector { margin: 10px; }
+  #boardSelector select, button { font-size: 1em; margin-left: 5px; padding: 0.5em 1em; }
+  #whiteboard {
+    flex-grow: 1; width: 90vw; background: #fafafa; border: 1px solid #ccc; position: relative; overflow: hidden;
+    margin-bottom: 10px;
+  }
+  .node {
+    position: absolute;
+    background: #61dafb;
+    border-radius: 5px;
+    padding: 10px;
+    cursor: move;
+    user-select: none;
+    min-width: 80px;
+    text-align: center;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+  }
+  .node input {
+    width: 100%;
+    border: none;
+    background: transparent;
+    font-weight: bold;
+    font-size: 1em;
+    text-align: center;
+    outline: none;
+  }
+  #header {
+    background: #282c34; color: white; padding: 10px;
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100vw;
+  }
+  #header > div {
+    display: flex; align-items: center; gap: 10px;
+  }
+  #welcome {
+    font-weight: bold;
+  }
+  .removeNodeBtn {
+    margin-left: 5px;
+    background: #f44336;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h2>Enter Username</h2>
+  <input type="text" id="usernameInput" placeholder="Choose a username" />
+  <button id="loginBtn">Enter</button>
+</div>
+
+<div id="app" style="display:none; flex-direction: column; height: 100vh;">
+  <div id="header">
+    <div>
+      <span id="welcome"></span>
+      <button id="logoutBtn">Logout</button>
+    </div>
+    <div id="boardSelector">
+      Board: 
+      <select id="boardList"></select>
+      <button id="newBoardBtn">+ New Board</button>
+      <button id="addNodeBtn">+ Add Node</button>
+    </div>
+  </div>
+  <div id="whiteboard"></div>
+</div>
+
+<script>
+(() => {
+  const BACKEND_URL = 'https://yourapp.onrender.com'; // CHANGE THIS to your Render backend URL
+
+  let username = null;
+  let boards = [];
+  let currentBoardId = null;
+  let currentBoard = null;
+
+  const loginDiv = document.getElementById('login');
+  const appDiv = document.getElementById('app');
+  const usernameInput = document.getElementById('usernameInput');
+  const loginBtn = document.getElementById('loginBtn');
+  const logoutBtn = document.getElementById('logoutBtn');
+  const welcomeSpan = document.getElementById('welcome');
+  const boardListSelect = document.getElementById('boardList');
+  const newBoardBtn = document.getElementById('newBoardBtn');
+  const addNodeBtn = document.getElementById('addNodeBtn');
+  const whiteboard = document.getElementById('whiteboard');
+
+  // Utils
+  function fetchJSON(url, opts) {
+    return fetch(url, opts).then(r => {
+      if (!r.ok) throw new Error(r.statusText);
+      return r.json();
+    });
+  }
+
+  // Login & Logout
+  function showLogin() {
+    loginDiv.style.display = 'flex';
+    appDiv.style.display = 'none';
+  }
+  function showApp() {
+    loginDiv.style.display = 'none';
+    appDiv.style.display = 'flex';
+  }
+  function doLogin() {
+    const val = usernameInput.value.trim();
+    if (!val) return alert('Please enter a username');
+    username = val;
+    localStorage.setItem('mu_username', username);
+    welcomeSpan.textContent = `Hello, ${username}!`;
+    showApp();
+    loadBoards();
+  }
+  function doLogout() {
+    username = null;
+    localStorage.removeItem('mu_username');
+    currentBoardId = null;
+    currentBoard = null;
+    clearWhiteboard();
+    boardListSelect.innerHTML = '';
+    showLogin();
+  }
+
+  // Board UI
+  function clearWhiteboard() {
+    whiteboard.innerHTML = '';
+  }
+
+  function renderBoard() {
+    clearWhiteboard();
+    if (!currentBoard) return;
+    for (const [nodeId, node] of Object.entries(currentBoard.nodes)) {
+      const el = createNodeElement(nodeId, node);
+      whiteboard.appendChild(el);
+    }
+  }
+
+  function createNodeElement(id, node) {
+    const el = document.createElement('div');
+    el.className = 'node';
+    el.style.left = node.x + 'px';
+    el.style.top = node.y + 'px';
+    el.setAttribute('data-id', id);
+
+    const input = document.createElement('input');
+    input.value = node.text;
+    input.addEventListener('input', e => {
+      updateNode(id, { text: e.target.value });
+    });
+    el.appendChild(input);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'removeNodeBtn';
+    removeBtn.textContent = 'x';
+    removeBtn.title = 'Remove node';
+    removeBtn.onclick = () => {
+      deleteNode(id);
+    };
+    el.appendChild(removeBtn);
+
+    // Dragging
+    let offsetX, offsetY;
+    function onMouseDown(e) {
+      offsetX = e.clientX - el.offsetLeft;
+      offsetY = e.clientY - el.offsetTop;
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+      el.style.zIndex = 1000;
+      e.preventDefault();
+    }
+    function onMouseMove(e) {
+      let x = e.clientX - offsetX;
+      let y = e.clientY - offsetY;
+      x = Math.max(0, Math.min(whiteboard.clientWidth - el.clientWidth, x));
+      y = Math.max(0, Math.min(whiteboard.clientHeight - el.clientHeight, y));
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+      updateNode(id, { x, y });
+    }
+    function onMouseUp() {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      el.style.zIndex = '';
+    }
+    el.addEventListener('mousedown', onMouseDown);
+
+    return el;
+  }
+
+  // API Calls
+
+  async function loadBoards() {
+    try {
+      boards = await fetchJSON(BACKEND_URL + '/boards');
+      boardListSelect.innerHTML = '';
+      boards.forEach(b => {
+        const option = document.createElement('option');
+        option.value = b.id;
+        option.textContent = b.name;
+        boardListSelect.appendChild(option);
+      });
+      if (boards.length > 0) {
+        selectBoard(boards[0].id);
+      } else {
+        currentBoardId = null;
+        currentBoard = null;
+        clearWhiteboard();
+      }
+    } catch (e) {
+      alert('Failed to load boards: ' + e.message);
+    }
+  }
+
+  async function selectBoard(id) {
+    currentBoardId = id;
+    try {
+      currentBoard = await fetchJSON(`${BACKEND_URL}/boards/${id}`);
+      renderBoard();
+      boardListSelect.value = id;
+    } catch (e) {
+      alert('Failed to load board: ' + e.message);
+    }
+  }
+
+  async function createBoard() {
+    const name = prompt('Enter new board name');
+    if (!name) return;
+    try {
+      const newBoard = await fetchJSON(BACKEND_URL + '/boards', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({name})
+      });
+      await loadBoards();
+      selectBoard(newBoard.id);
+    } catch (e) {
+      alert('Failed to create board: ' + e.message);
+    }
+  }
+
+  async function addNode() {
+    if (!currentBoardId) return alert('Select or create a board first');
+    try {
+      const newNode = await fetchJSON(`${BACKEND_URL}/boards/${currentBoardId}/nodes`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ text: 'New node', x: 50, y: 50 })
+      });
+      await selectBoard(currentBoardId);
+    } catch (e) {
+      alert('Failed to add node: ' + e.message);
+    }
+  }
+
+  async function updateNode(nodeId, data) {
+    if (!currentBoardId) return;
+    try {
+      await fetchJSON(`${BACKEND_URL}/boards/${currentBoardId}/nodes/${nodeId}`, {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(data)
+      });
+    } catch (e) {
+      alert('Failed to update node: ' + e.message);
+    }
+  }
+
+  async function deleteNode(nodeId) {
+    if (!currentBoardId) return;
+    try {
+      await fetchJSON(`${BACKEND_URL}/boards/${currentBoardId}/nodes/${nodeId}`, {
+        method: 'DELETE'
+      });
+      await selectBoard(currentBoardId);
+    } catch (e) {
+      alert('Failed to delete node: ' + e.message);
+    }
+  }
+
+  // Events
+  loginBtn.onclick = doLogin;
+  logoutBtn.onclick = doLogout;
+  newBoardBtn.onclick = createBoard;
+  addNodeBtn.onclick = addNode;
+  boardListSelect.onchange = e => selectBoard(e.target.value);
+
+  // Init
+  (function init() {
+    const storedUser = localStorage.getItem('mu_username');
+    if (storedUser) {
+      username = storedUser;
+      welcomeSpan.textContent = `Hello, ${username}!`;
+      showApp();
+      loadBoards();
+    } else {
+      showLogin();
+    }
+  })();
+
+})();
+</script>
+
+</body>
+</html>
